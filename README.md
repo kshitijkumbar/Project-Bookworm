@@ -3,4 +3,4 @@ An attempt to have your own librarian!
 
 Examples:
 
-![Recommedation 1](imgs/sc1.png)
+![Recommedation 1](imgs/chatbot.gif)
