@@ -1,13 +1,19 @@
 from pathlib import Path
+import os
+import openai
+openai.api_key = os.getenv("OAI_KEY")
+from llama_index.llms.openai import OpenAI
+from llama_index.embeddings.openai import OpenAIEmbedding
+import nest_asyncio
+
+nest_asyncio.apply()
+
+
 
 from llama_index.core import(SimpleDirectoryReader,
                             VectorStoreIndex, StorageContext,
                             Settings,set_global_tokenizer)
-from llama_index.llms.llama_cpp import LlamaCPP
-from llama_index.llms.llama_cpp.llama_utils import (
-    messages_to_prompt,
-    completion_to_prompt,
-)
+
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from transformers import AutoTokenizer, BitsAndBytesConfig
 from llama_index.llms.huggingface import HuggingFaceLLM
@@ -15,18 +21,17 @@ import torch
 import logging
 import sys
 import streamlit as st
+import os
+from llama_index.core import load_index_from_storage
 
-default_bnb_config = BitsAndBytesConfig(
-                                                load_in_4bit=True,
-                                                bnb_4bit_quant_type='nf4',
-                                                bnb_4bit_use_double_quant=True,
-                                                bnb_4bit_compute_dtype=torch.bfloat16
-                                            )
+
+Settings.llm = OpenAI(model="gpt-3.5-turbo-instruct", temperature=0.2)
+Settings.embed_model = OpenAIEmbedding(
+    model="text-embedding-3-large", embed_batch_size=100
+)
+
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logging.getLogger().addHandler(logging.StreamHandler(stream=sys.stdout))
-set_global_tokenizer(
-    AutoTokenizer.from_pretrained("NousResearch/Llama-2-7b-chat-hf").encode
-)
 
 
 def getDocs(doc_path="./data/"):
@@ -34,45 +39,28 @@ def getDocs(doc_path="./data/"):
     return documents
 
 
-def getVectorIndex(docs):
+def getVectorIndex():
     Settings.chunk_size = 512
     index_set = {}
-
-    storage_context = StorageContext.from_defaults()
-    cur_index = VectorStoreIndex.from_documents(docs, embed_model = getEmbedModel())
-    storage_context.persist(persist_dir=f"./storage/book_data")
+    if os.path.isdir(f"./storage/open_ai_embedding_data_large"):
+        print("Index already exists")
+        storage_context = StorageContext.from_defaults(
+        persist_dir=f"./storage/open_ai_embedding_data_large"
+        )
+        cur_index = load_index_from_storage(
+            storage_context,
+        )
+    else:
+        print("Index does not exist, creating new index")
+        docs = getDocs()
+        storage_context = StorageContext.from_defaults()
+        cur_index = VectorStoreIndex.from_documents(docs, storage_context=storage_context)
+        storage_context.persist(persist_dir=f"./storage/open_ai_embedding_data_large")
     return cur_index
 
-
-def getLLM():
-
-    model_path = "NousResearch/Llama-2-13b-chat-hf"
-    # model_path = "meta-llama/Llama-2-13b-chat-hf"
-
-    llm = HuggingFaceLLM(
-    context_window=3900,
-    max_new_tokens=256,
-    # generate_kwargs={"temperature": 0.25, "do_sample": False},
-    tokenizer_name=model_path,
-    model_name=model_path,
-    device_map=0,
-    tokenizer_kwargs={"max_length": 2048},
-    # uncomment this if using CUDA to reduce memory usage
-    model_kwargs={"torch_dtype": torch.float16,
-    "quantization_config": default_bnb_config,
-    }
-    )
-    return llm
-
-
 def getQueryEngine(index):
-    query_engine = index.as_chat_engine(llm=getLLM())
+    query_engine = index.as_chat_engine()
     return query_engine
-
-def getEmbedModel():
-    embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
-    return embed_model
-
 
 
 
@@ -94,14 +82,17 @@ if "messages" not in st.session_state.keys(): # Initialize the chat messages his
 
 @st.cache_resource(show_spinner=False)
 def load_data():
-    index = getVectorIndex(getDocs())
+    index = getVectorIndex()
     return index
-    query_engine = getQueryEngine(index)
-
+import time
+s_time = time.time()
 index = load_data()
+e_time = time.time()
+
+print(f"It took {e_time - s_time} to load index")
 
 if "chat_engine" not in st.session_state.keys(): # Initialize the chat engine
-        st.session_state.chat_engine = index.as_chat_engine(llm=getLLM(),chat_mode="condense_question", verbose=True)
+        st.session_state.chat_engine = index.as_chat_engine(chat_mode="condense_plus_context", verbose=True)
 
 if prompt := st.chat_input("Your question"): # Prompt for user input and save to chat history
     st.session_state.messages.append({"role": "user", "content": prompt})
