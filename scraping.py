@@ -1,23 +1,25 @@
 import requests
 from bs4 import BeautifulSoup
-import re
 import os
 import openai
 from openai import OpenAI
 openai.api_key = os.getenv("OAI_KEY")
 client = OpenAI()
+import streamlit as st
+import random
+import time
 import json
 
 
 
-def openAI_api_call(mode, query, msgs = None):
+def openAI_api_call(mode, query, raw_query = None):
 
     if mode == "Summarize":    
         response = client.chat.completions.create(
         model="gpt-3.5-turbo-0125",
         # response_format={ "type": "json_object" },
         messages=[
-            {"role": "system", "content": "You are a helpful assistant designed to cleanup and compress data collected scraped from a website."},
+            {"role": "system", "content": "You are a helpful assistant designed to cleanup and compress data collected scraped from a website. Answer with only the compressed data"},
             {"role": "user", "content": query}
         ]
         )
@@ -30,14 +32,43 @@ def openAI_api_call(mode, query, msgs = None):
             {"role": "user", "content": query}
         ]
         )
-    else:
+    elif mode == "context_check":
         
         curr_msgs = [
-            {"role": "system", "content": "You are a helpful assistant designed to provide answers in markdown format to questions only based on context provided in natural, conversational manner."},
+            {"role": "system", "content": "You are an assistant that needs to check if the query that the user presents ath the is in context of the conversation provided or not. Answer only by saying lowercase yes or no"},
         ]
         
         n=5
         list_msgs = st.session_state.messages[-n:] if len(st.session_state.messages) >= n else st.session_state.messages
+        
+        for dict_n in list_msgs:
+            curr_msgs.append(dict_n)
+        
+        curr_msgs.append({"role": "user", "content": query})
+        
+        
+        response = client.chat.completions.create(
+        model="gpt-3.5-turbo-0125",
+        # response_format={ "type": "json_object" },
+        messages=curr_msgs
+        )
+    elif mode == "img_search_reqd":
+        response = client.chat.completions.create(
+        model="gpt-3.5-turbo-0125",
+        # response_format={ "type": "json_object" },
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant designed to tell if the user is asking for Book titles or Movie titles. If so answer only by saying lowercase yes or no"},
+            {"role": "user", "content": query}
+        ]
+        )
+    else:
+        
+        curr_msgs = [
+            {"role": "system", "content": "You are a helpful assistant designed to provide answers in markdown format to questions about books or movies and anything related to them, from the latest query or past chat history. Refuse to answer otherwise. If the question requires context then answer only based on context provided in natural, conversational manner. Otherwise, ignore the context "},
+        ]
+        
+        n=5
+        list_msgs = st.session_state.messages[-n] if len(st.session_state.messages) >= n else st.session_state.messages
         
         for dict_n in list_msgs:
             curr_msgs.append(dict_n)
@@ -65,7 +96,7 @@ def fetch_context(query):
         "X-Subscription-Token": api_key
     }
     titles = query.split(',')
-    print(titles)
+    print(f"Query split: {titles}")
     summarized_text = []
     
     for title in titles:
@@ -122,63 +153,52 @@ def fetch_images(query):
         "Accept-Encoding": "gzip",
         "X-Subscription-Token": api_key
     }
+    titles = query.split(',')
+    url_list = []
+    for q in titles:
+        params = {
+            "q": q,
+            "count": 3
+        }
+        print(f"Image Query: {q}")
+        response = requests.get(url, headers=headers, params=params)
+        try:
+            # # Send an HTTP GET request to the search engine
+            if response.status_code == 200:
+                results_dict = response.json()
+                # Parse the HTML content of the search results page
+                soup = BeautifulSoup(response.text, 'html.parser')
+                attrs = [f"{val} \n\n" for val in soup.contents]
+                urls = []
+                # print(soup.get_text())
+                for res in results_dict['results']:
+                    urls.append(res['thumbnail']['src'])
 
-    params = {
-        "q": query,
-        "count": 3
-    }
+                for url in urls:
+                    try:
+                        response = requests.get(url)
+                        if response.status_code == 200:
+                            url_list.append(url)
 
-    response = requests.get(url, headers=headers, params=params)
-
-    # # Send an HTTP GET request to the search engine
-    import json
-    if response.status_code == 200:
-        results_dict = response.json()
-        # Parse the HTML content of the search results page
-        soup = BeautifulSoup(response.text, 'html.parser')
-        attrs = [f"{val} \n\n" for val in soup.contents]
-        urls = []
-        # print(soup.get_text())
-        for res in results_dict['results']:
-            urls.append(res['thumbnail']['src'])
-
-        valid_urls = []
-        for url in urls:
-            try:
-                response = requests.get(url)
-                if response.status_code == 200:
-                    valid_urls.append(url)
-                    
-                    # soup = BeautifulSoup(response.text, 'html.parser')
-
-                    # # Extract all text from the HTML
-                    # all_text = soup.get_text()
-
-                    # # Print the extracted text
-                    # # print("="*100)
-                    # filtered_text = all_text.replace('\n'," ").replace('\t', " ").replace('  ', " ")
-                    # summary = openAI_api_call("Summarize", filtered_text)
-                    # # print(f"Filtered Text: {filtered_text}")
-                    # # print(f"Summarized Text: {summary}")
-                    # summarized_text.append(summary)
-                    # print("="*100)
-            except:
-                print(f"Invalid url : {url}")
-        return valid_urls
-    else:
-        print("Failed to fetch real-time data. Status code:", response.status_code)
-        return []
+                    except:
+                        print(f"Invalid url : {url}")
+            else:
+                print("Failed to fetch real-time data. Status code:", response.status_code)
+        except:
+            print("Cant retrieve")
+        
+    print(url_list)
+    return url_list
 
 
 
-
-def fetch_answer_from_bot(query, context):
+def fetch_answer_from_bot(raw_query, context):
     
     
     augmented_query = f"""
             Context: {context}
 
-            Question: {query}
+            Question: {raw_query}
             
             Answer: 
     
@@ -188,33 +208,13 @@ def fetch_answer_from_bot(query, context):
     # print(augmented_query)
     # print("###"*10)
     
-    return openAI_api_call("Answer", augmented_query)
+    return openAI_api_call("Answer", augmented_query, raw_query)
 
 
 def display_imgs(urls):
     for url in urls:
         print(url)
         st.image(url, width = 100)
-
-
-# while(True):
-#     query = input("What would you like to know today?: ")
-
-#     # context = fetch_context(query)
-#     images = fetch_images(query)
-    
-#     # for c in context:
-#     #     print("$$$$"*10)
-#     #     print(f"Context is: {c}")
-#     #     print("$$$$"*10)
-
-#     # answer = fetch_answer_from_bot(query, context)
-
-#     # print(answer)
-
-import streamlit as st
-import random
-import time
 
 
 # Streamed response emulator
@@ -225,8 +225,10 @@ def response_generator(answer):
         time.sleep(0.05)
 
 
-st.title("Simple chat")
-
+st.set_page_config(page_title="Project BookWorm: Your own Librarian!", page_icon="🦙", layout="centered", initial_sidebar_state="auto", menu_items=None)
+st.title("Project BookWorm: Your own Librarian!")
+st.info("Use this app to get recommendations for books that your kids will love!", icon="📃")
+     
 # Initialize chat history
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -239,26 +241,51 @@ for message in st.session_state.messages:
 # Accept user input
 if prompt := st.chat_input("What would you like to know today?"):
     # Add user message to chat history
+    print(f"Prompt: {prompt}")
     st.session_state.messages.append({"role": "user", "content": prompt})
-    context = fetch_context(prompt)
-    answer = fetch_answer_from_bot(prompt, context)
-    img_query = openAI_api_call("img_search", answer)
-    print("context :")
-    print(context)
-    print("context answer:")
+    from_prev = openAI_api_call("context_check", prompt)
+    urls = None
+    print(f"Needs context: {from_prev}")
+    if True:
+        print("Needs context")
+        context = fetch_context(prompt)
+        answer = fetch_answer_from_bot(prompt, context)
+        img_reqd = openAI_api_call("img_search_reqd", answer)
+        print(f"Img reqd: {img_reqd}")
+        if "yes" in img_reqd:
+            img_query = openAI_api_call("img_search", answer)
+            print("img_query:")
+            print(img_query)
+            urls = fetch_images(img_query)
+        else:
+            print("No Image required")
+    else:
+        print("Follow up question")
+        answer = openAI_api_call("", prompt)
+        
+        img_reqd = openAI_api_call("img_search_reqd", answer)
+        print(f"Img reqd: {img_reqd}")
+        if "yes" in img_reqd:
+            img_query = openAI_api_call("img_search", answer)
+            print("img_query:")
+            print(img_query)
+            urls = fetch_images(img_query)
+        else:
+            print("No Image required")
+    # print("context :")
+    # print(context)
+    # print("context answer:")
     print(answer)
-    print("img_query:")
-    print(img_query)
-    urls = fetch_images(img_query)
+
     # Display user message in chat message container
     with st.chat_message("user"):
-        st.markdown(prompt)
-        
+        st.markdown(prompt)        
 
     # Display assistant response in chat message container
     with st.chat_message("assistant"):
-        response = st.write_stream(response_generator(answer))
-        display_imgs(urls)
+        # response = st.write_stream(response_generator(answer))
+        response = st.markdown(answer)
+        if urls: display_imgs(urls)
         
     # Add assistant response to chat history
-    st.session_state.messages.append({"role": "assistant", "content": response})
+    st.session_state.messages.append({"role": "assistant", "content": answer})
